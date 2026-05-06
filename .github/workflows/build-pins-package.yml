@@ -119,6 +119,119 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libudev-dev libjsoncpp-dev autoconf autoconf-archive libtool pkg-config
 
+      - name: Build prerequisite OpenCV and INDI stacks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            wget \
+            unzip \
+            git \
+            libboost-all-dev \
+            libboost-regex-dev \
+            libcfitsio-dev \
+            libcurl4-gnutls-dev \
+            libdc1394-dev \
+            libeigen3-dev \
+            libev-dev \
+            libfftw3-dev \
+            libftdi-dev \
+            libgphoto2-dev \
+            libgsl-dev \
+            libhidapi-dev \
+            libjpeg-dev \
+            libkrb5-dev \
+            liblimesuite-dev \
+            libnova-dev \
+            libraw-dev \
+            librtlsdr-dev \
+            libtheora-dev \
+            libtiff-dev \
+            libusb-1.0-0-dev \
+            libusb-dev \
+            libv4l-dev \
+            libwebp-dev \
+            libwxgtk3.2-dev \
+            libx11-dev \
+            libxisf-dev \
+            nlohmann-json3-dev \
+            wx-common \
+            wx3.2-i18n \
+            zlib1g-dev
+
+          installed_opencv="$(pkg-config --modversion opencv4 2>/dev/null || true)"
+          required_major_minor="$(echo "${{ env.OPENCV_REQUIRED_VERSION }}" | awk -F. '{print $1"."$2}')"
+
+          if [[ "$installed_opencv" == "${{ env.OPENCV_REQUIRED_VERSION }}" || "$installed_opencv" == "$required_major_minor"* ]]; then
+            echo "OpenCV $installed_opencv already available"
+          else
+            echo "Building OpenCV ${{ env.OPENCV_REQUIRED_VERSION }} from source"
+            rm -rf "${{ env.OPENCV_SOURCE_ROOT }}"
+            mkdir -p "${{ env.OPENCV_SOURCE_ROOT }}"
+
+            wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
+            unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
+
+            cmake_args=(
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_INSTALL_PREFIX="${{ env.OPENCV_INSTALL_PREFIX }}"
+              -DOPENCV_GENERATE_PKGCONFIG=ON
+            )
+
+            if [ "${{ env.OPENCV_EXTRA_MODULES }}" = "true" ]; then
+              wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv_contrib/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
+              unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
+              cmake_args+=("-DOPENCV_EXTRA_MODULES_PATH=${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}/modules")
+            fi
+
+            cmake -S "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}" -B "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" "${cmake_args[@]}"
+            cmake --build "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" --parallel "$(nproc)"
+            sudo cmake --install "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}"
+            sudo ldconfig
+          fi
+
+          echo "Building INDI core v${{ env.PHD2_INDI_VERSION }}"
+          projects_home="${HOME}/Projects"
+          mkdir -p "$projects_home" "$projects_home/build"
+
+          indi_core_src="$projects_home/indi-core"
+          indi_core_build="$projects_home/build/indi-core"
+          rm -rf "$indi_core_src" "$indi_core_build"
+          git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi.git "$indi_core_src"
+          cmake -S "$indi_core_src" -B "$indi_core_build" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$indi_core_build" --parallel "$(nproc)"
+          sudo cmake --install "$indi_core_build"
+          sudo ldconfig
+
+          if [ "${{ env.PHD2_BUILD_INDI_3RDPARTY }}" = "true" ]; then
+            echo "Building INDI 3rdparty v${{ env.PHD2_INDI_VERSION }}"
+            indi_3p_src="$projects_home/indi-3rdparty"
+            indi_3p_build="$projects_home/build/indi-3rdparty"
+            rm -rf "$indi_3p_src" "$indi_3p_build"
+            git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi-3rdparty.git "$indi_3p_src"
+
+            cmake -S "$indi_3p_src" -B "$indi_3p_build" \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DINDI_ROOT="${{ env.PHD2_INDI_ROOT }}" \
+              -DCMAKE_PREFIX_PATH="${{ env.PHD2_INDI_ROOT }}:${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
+            cmake --build "$indi_3p_build" --parallel "$(nproc)"
+            sudo cmake --install "$indi_3p_build"
+            sudo ldconfig
+          fi
+
+          echo "PKG_CONFIG_PATH=${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "OpenCV_DIR=${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4" >> "$GITHUB_ENV"
+          echo "PREREQ_INDI_OPENCV_READY=true" >> "$GITHUB_ENV"
+
       - name: Build and install libgpiod 2.2
         shell: bash
         run: |
@@ -775,6 +888,8 @@ jobs:
           projects_home="${HOME}/Projects"
           mkdir -p "$projects_home" "$projects_home/build"
 
+          echo "Building required INDI core v${{ env.PHD2_INDI_VERSION }} for PHD2"
+          indi_core_built="false"
           indi_core_src="$projects_home/indi-core"
           indi_core_build="$projects_home/build/indi-core"
           rm -rf "$indi_core_src" "$indi_core_build"
@@ -783,6 +898,12 @@ jobs:
           cmake --build "$indi_core_build" --parallel "$(nproc)"
           sudo cmake --install "$indi_core_build"
           sudo ldconfig
+          indi_core_built="true"
+
+          if [ "$indi_core_built" != "true" ]; then
+            echo "INDI core build did not complete successfully; aborting PHD2 packaging." >&2
+            exit 1
+          fi
 
           equivs_dir="/tmp/libindi-dev-equivs"
           rm -rf "$equivs_dir"
@@ -814,7 +935,9 @@ jobs:
 
           ensure_opencv_required_version
 
+          indi_3p_built="false"
           if [ "${{ env.PHD2_BUILD_INDI_3RDPARTY }}" = "true" ]; then
+            echo "Building required INDI 3rdparty v${{ env.PHD2_INDI_VERSION }} for PHD2"
             indi_3p_src="$projects_home/indi-3rdparty"
             indi_3p_build="$projects_home/build/indi-3rdparty"
             rm -rf "$indi_3p_src" "$indi_3p_build"
@@ -826,9 +949,15 @@ jobs:
               -DINDI_ROOT="${{ env.PHD2_INDI_ROOT }}" \
               -DCMAKE_PREFIX_PATH="${{ env.PHD2_INDI_ROOT }}:${CMAKE_PREFIX_PATH:-}"; then
               if cmake --build "$indi_3p_build" --parallel "$(nproc)"; then
-                sudo cmake --install "$indi_3p_build" || true
-                sudo ldconfig || true
+                sudo cmake --install "$indi_3p_build"
+                sudo ldconfig
+                indi_3p_built="true"
               fi
+            fi
+
+            if [ "$indi_3p_built" != "true" ]; then
+              echo "INDI 3rdparty build is required for PHD2 but did not complete successfully." >&2
+              exit 1
             fi
           fi
 
