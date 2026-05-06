@@ -181,6 +181,10 @@ jobs:
           git clone --depth 1 --branch main https://github.com/nitr57/pins.external NINA/External
           pushd NINA/External >/dev/null
           git lfs pull || true
+          if [ -f .gitmodules ]; then
+            git submodule sync --recursive || true
+            git submodule update --init --recursive
+          fi
           popd >/dev/null
 
           jpleph_url="https://github.com/isbeorn/nina.external/raw/refs/heads/master/JPLEPH"
@@ -195,29 +199,45 @@ jobs:
             exit 1
           fi
 
-          # Rebuild NOVAS and sync generated files into the existing external layout.
-          if [ ! -d "NOVAS31" ]; then
-            echo "NOVAS31 submodule directory not found after checkout/update." >&2
-            git submodule status || true
-            ls -la
+          # Rebuild NOVAS from source (prefer sources in pins.external clone).
+          novas_source_dir=""
+          if [ -d "NINA/External/NOVAS31" ]; then
+            novas_source_dir="NINA/External/NOVAS31"
+          elif [ -d "NOVAS31" ]; then
+            novas_source_dir="NOVAS31"
+          else
+            echo "NOVAS31 source directory not found in NINA/External or workspace root." >&2
+            ls -la NINA/External || true
             exit 1
           fi
-          pushd NOVAS31 >/dev/null
+
+          pushd "$novas_source_dir" >/dev/null
           make clean || true
           make
           popd >/dev/null
 
           mkdir -p "NINA/External/${target_runtime}/NOVAS"
-          cp -f NOVAS31/libnovas_c.so "NINA/External/${target_runtime}/NOVAS/libnovas_c.so"
-          cp -f NOVAS31/cio_ra.bin "NINA/External/${target_runtime}/NOVAS/cio_ra.bin"
+          cp -f "$novas_source_dir/libnovas_c.so" "NINA/External/${target_runtime}/NOVAS/libnovas_c.so"
+          cp -f "$novas_source_dir/cio_ra.bin" "NINA/External/${target_runtime}/NOVAS/cio_ra.bin"
 
           if [ ! -f "NINA/External/JPLEPH" ]; then
             echo "NINA/External/JPLEPH not found" >&2
             exit 1
           fi
 
-          # SOFA makefile builds static lib by default, so build a shared object explicitly.
-          pushd SOFA/SOFA/src >/dev/null
+          # Rebuild SOFA from source (prefer sources in pins.external clone).
+          sofa_source_dir=""
+          if [ -d "NINA/External/SOFA/SOFA/src" ]; then
+            sofa_source_dir="NINA/External/SOFA/SOFA/src"
+          elif [ -d "SOFA/SOFA/src" ]; then
+            sofa_source_dir="SOFA/SOFA/src"
+          else
+            echo "SOFA source directory not found in NINA/External or workspace root." >&2
+            ls -la NINA/External || true
+            exit 1
+          fi
+
+          pushd "$sofa_source_dir" >/dev/null
           make clean || true
           make
           rm -f ./*.o libsofa_c.so
@@ -231,7 +251,7 @@ jobs:
           popd >/dev/null
 
           mkdir -p "NINA/External/${target_runtime}/SOFA"
-          cp -f SOFA/SOFA/src/libsofa_c.so "NINA/External/${target_runtime}/SOFA/libsofa_c.so"
+          cp -f "$sofa_source_dir/libsofa_c.so" "NINA/External/${target_runtime}/SOFA/libsofa_c.so"
 
           # Keep only NOVAS and SOFA under the runtime-specific external folder.
           find "NINA/External/${target_runtime}" -mindepth 1 -maxdepth 1 ! -name 'NOVAS' ! -name 'SOFA' -exec rm -rf {} +
