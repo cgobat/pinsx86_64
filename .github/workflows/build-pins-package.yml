@@ -23,6 +23,21 @@ env:
   PLUGIN_ARTIFACT_DIR: artifacts/plugins
   PLUGIN_MSBUILD_ARGS: -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU -p:SatelliteResourceLanguages="en-US"
   PLUGIN_FAILURES_FILE: artifacts/plugin-build-failures.log
+  INDI_ENABLE_XISF: true
+  LIBXISF_AUTO_UPGRADE_IF_OLD: true
+  LIBXISF_REPO_URL: https://github.com/joxda/libXISF.git
+  LIBXISF_BRANCH: master
+  LIBXISF_INSTALL_PREFIX: /usr/local
+  PHD2_REPO_URL: https://github.com/acocalypso/phd2.git
+  PHD2_BRANCH: master
+  PHD2_INDI_VERSION: 2.1.9
+  PHD2_OPENCV_VERSION: 4.11.0
+  PHD2_BUILD_INDI_3RDPARTY: true
+  PHD2_INDI_ROOT: /usr
+  OPENCV_REQUIRED_VERSION: 4.11.0
+  OPENCV_SOURCE_ROOT: artifacts/src/opencv
+  OPENCV_INSTALL_PREFIX: /usr/local
+  OPENCV_EXTRA_MODULES: true
 
 jobs:
   build-linux-x64:
@@ -139,7 +154,6 @@ jobs:
           jpleph_url="https://github.com/isbeorn/nina.external/raw/refs/heads/master/JPLEPH"
           curl -L --fail --retry 3 --retry-delay 5 -o "NINA/External/JPLEPH" "$jpleph_url"
 
-          rm -rf "NINA/External/linux-x64"
           rm -f "NINA/External/.gitignore" "NINA/External/.gitattributes"
 
           target_runtime="${{ env.TARGET_RUNTIME }}"
@@ -208,6 +222,38 @@ jobs:
         run: |
           dotnet restore NINA/NINA.csproj -r ${{ env.TARGET_RUNTIME }}
           dotnet restore System.Windows.Compat/System.Windows.Compat.csproj
+
+      - name: Stage OpenCvSharp runtime from NuGet
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runtime_version=$(sed -n 's/.*OpenCvSharp4\.official\.runtime\.\$(RuntimeIdentifier)" Version="\([^"]*\)".*/\1/p' NINA/NINA.csproj | head -n 1)
+          if [ -z "$runtime_version" ]; then
+            echo "Could not parse OpenCvSharp runtime package version from NINA/NINA.csproj" >&2
+            exit 1
+          fi
+
+          nuget_global_packages=$(dotnet nuget locals global-packages --list | sed -n 's/^global-packages: //p' | head -n 1)
+          if [ -z "$nuget_global_packages" ]; then
+            echo "Could not determine NuGet global-packages path" >&2
+            exit 1
+          fi
+
+          package_so="$nuget_global_packages/opencvsharp4.official.runtime.linux-x64/$runtime_version/runtimes/linux-x64/native/libOpenCvSharpExtern.so"
+          if [ ! -f "$package_so" ]; then
+            echo "OpenCvSharp runtime not in cache after restore, retrying restore" >&2
+            dotnet restore NINA/NINA.csproj -r ${{ env.TARGET_RUNTIME }}
+          fi
+
+          if [ ! -f "$package_so" ]; then
+            echo "OpenCvSharp runtime library not found: $package_so" >&2
+            exit 1
+          fi
+
+          mkdir -p "NINA/External/${{ env.TARGET_RUNTIME }}"
+          cp -f "$package_so" "NINA/External/${{ env.TARGET_RUNTIME }}/libOpenCvSharpExtern.so"
+          chmod 755 "NINA/External/${{ env.TARGET_RUNTIME }}/libOpenCvSharpExtern.so"
 
       - name: Build System.Windows.Compat
         run: dotnet build System.Windows.Compat/System.Windows.Compat.csproj -c ${{ env.BUILD_CONFIGURATION }} --no-restore
@@ -293,7 +339,7 @@ jobs:
       - name: Prepare Debian filesystem
         run: |
           deb_root="${{ env.DEB_ROOT }}"
-          install_root="$deb_root/home/ubuntu/pins"
+          install_root="$deb_root/${{ env.INSTALL_DIRECTORY }}"
           rm -rf "$deb_root"
           mkdir -p "$install_root"
           rsync -a "${{ env.PACKAGE_ROOT }}/pins/" "$install_root/"
@@ -303,8 +349,18 @@ jobs:
           deb_root="${{ env.DEB_ROOT }}"
           service_path="$deb_root/etc/systemd/system/pins.service"
           service_dir="$(dirname "$service_path")"
+          target_user="${SUDO_USER:-$USER}"
+          host_multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
           mkdir -p "$service_dir"
           cp packaging/systemd/pins.service "$service_path"
+          sed -i \
+            -e "s|/home/pi/pins|${{ env.INSTALL_DIRECTORY }}|g" \
+            -e "s|User=pi|User=${target_user}|g" \
+            -e "s|Group=pi|Group=${target_user}|g" \
+            "$service_path"
+          if [ -n "$host_multiarch" ]; then
+            sed -i -e "s|aarch64-linux-gnu|$host_multiarch|g" "$service_path"
+          fi
           chmod 644 "$service_path"
 
       - name: Add Debian maintainer scripts
@@ -327,7 +383,7 @@ jobs:
           deb_root="${{ env.DEB_ROOT }}"
           control_dir="$deb_root/DEBIAN"
           mkdir -p "$control_dir"
-          installed_size=$(du -sk "$deb_root/home/ubuntu/pins" | cut -f1)
+          installed_size=$(du -sk "$deb_root/${{ env.INSTALL_DIRECTORY }}" | cut -f1)
           {
             echo "Package: ${{ env.DEB_PACKAGE }}"
             echo "Version: ${{ steps.version.outputs.package_version }}"
@@ -362,12 +418,13 @@ jobs:
       - name: Build PinsDaemon Package
         working-directory: pinsdaemon
         run: |
+          TARGET_USER="${SUDO_USER:-$USER}"
           mkdir -p build/opt/pinsdaemon
           mkdir -p build/usr/local/bin
           mkdir -p build/etc/systemd/system
           mkdir -p build/etc/NetworkManager/dispatcher.d
           mkdir -p build/etc/sudoers.d
-          mkdir -p build/home/ubuntu/pins-scripts
+          mkdir -p build/home/$TARGET_USER/pins-scripts
           mkdir -p build/lib/udev/rules.d
           mkdir -p build/DEBIAN
           
@@ -387,7 +444,7 @@ jobs:
           cp scripts/install-indi-package.sh build/usr/local/bin/
           
           # Hotspot hook script
-          cp scripts/hotspot.sh build/home/ubuntu/pins-scripts/
+          cp scripts/hotspot.sh build/home/$TARGET_USER/pins-scripts/
 
           # NetworkManager runtime recovery hook
           cp scripts/90-pins-wifi-recovery build/etc/NetworkManager/dispatcher.d/
@@ -476,6 +533,286 @@ jobs:
           deb_path="artifacts/${deb_package}_${sdk_version}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb"
           dpkg-deb --root-owner-group --build "$deb_root" "$deb_path"
           sha256sum "$deb_path" > "$deb_path.sha256"
+
+      - name: Build PHD2 Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ensure_modern_libxisf_if_enabled() {
+            if [ "${{ env.INDI_ENABLE_XISF }}" != "true" ]; then
+              return 0
+            fi
+
+            has_required_api="false"
+            header_candidates=(
+              "${{ env.LIBXISF_INSTALL_PREFIX }}/include/libxisf.h"
+              "/usr/local/include/libxisf.h"
+              "/usr/include/libxisf.h"
+            )
+
+            for header in "${header_candidates[@]}"; do
+              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
+                has_required_api="true"
+                break
+              fi
+            done
+
+            if [ "$has_required_api" = "true" ]; then
+              return 0
+            fi
+
+            if [ "${{ env.LIBXISF_AUTO_UPGRADE_IF_OLD }}" != "true" ]; then
+              echo "LibXISF lacks required ZSTD API and auto-upgrade is disabled." >&2
+              return 1
+            fi
+
+            rm -rf artifacts/src/libxisf
+            mkdir -p artifacts/src
+            git clone --depth 1 --branch "${{ env.LIBXISF_BRANCH }}" "${{ env.LIBXISF_REPO_URL }}" artifacts/src/libxisf
+
+            cmake -S artifacts/src/libxisf -B artifacts/src/libxisf/build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="${{ env.LIBXISF_INSTALL_PREFIX }}" \
+              -DUSE_BUNDLED_LIBS=ON \
+              -DBUILD_SHARED_LIBS=ON
+            cmake --build artifacts/src/libxisf/build --parallel "$(nproc)"
+            sudo cmake --install artifacts/src/libxisf/build
+            sudo ldconfig
+
+            for header in "${header_candidates[@]}"; do
+              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
+                return 0
+              fi
+            done
+
+            echo "LibXISF upgrade completed but required API is still missing." >&2
+            return 1
+          }
+
+          ensure_opencv_required_version() {
+            installed="$(pkg-config --modversion opencv4 2>/dev/null || true)"
+            required_major_minor="$(echo "${{ env.OPENCV_REQUIRED_VERSION }}" | awk -F. '{print $1"."$2}')"
+
+            if [[ "$installed" == "${{ env.OPENCV_REQUIRED_VERSION }}" || "$installed" == "$required_major_minor"* ]]; then
+              return 0
+            fi
+
+            rm -rf "${{ env.OPENCV_SOURCE_ROOT }}"
+            mkdir -p "${{ env.OPENCV_SOURCE_ROOT }}"
+
+            wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
+            unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
+
+            cmake_args=(
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_INSTALL_PREFIX="${{ env.OPENCV_INSTALL_PREFIX }}"
+              -DOPENCV_GENERATE_PKGCONFIG=ON
+            )
+
+            if [ "${{ env.OPENCV_EXTRA_MODULES }}" = "true" ]; then
+              wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv_contrib/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
+              unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
+              cmake_args+=("-DOPENCV_EXTRA_MODULES_PATH=${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}/modules")
+            fi
+
+            cmake -S "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}" -B "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" "${cmake_args[@]}"
+            cmake --build "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" --parallel "$(nproc)"
+            sudo cmake --install "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}"
+            sudo ldconfig
+
+            export PKG_CONFIG_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            export LD_LIBRARY_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}"
+            export CMAKE_PREFIX_PATH="${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
+            export OpenCV_DIR="${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4"
+          }
+
+          configure_phd2_service_file() {
+            local service_file="$1"
+            local target_user="$2"
+            local target_home="$3"
+            [ -f "$service_file" ] || return
+
+            sed -i \
+              -e "s|^User=.*|User=${target_user}|" \
+              -e "s|^Group=.*|Group=${target_user}|" \
+              -e "s|^Environment=DISPLAY=.*|Environment=DISPLAY=:0|" \
+              -e "s|^Environment=XAUTHORITY=.*|Environment=XAUTHORITY=${target_home}/.Xauthority|" \
+              -e "s|^Environment=HOME=.*|Environment=HOME=${target_home}|" \
+              -e "s|^WorkingDirectory=.*|WorkingDirectory=${target_home}|" \
+              -e "s|^Restart=.*|Restart=on-failure|" \
+              -e "s|/home/pi|${target_home}|g" \
+              "$service_file"
+
+            local tmp_service
+            tmp_service="$(mktemp)"
+            awk -v home="${target_home}" '
+              /^ConditionPathExists=\/tmp\/\.X11-unix\/X0$/ { next }
+              /^ConditionPathExists=.*\.Xauthority$/ { next }
+              { print }
+              $0 ~ /^After=.*graphical\.target/ {
+                print "ConditionPathExists=/tmp/.X11-unix/X0"
+                print "ConditionPathExists=" home "/.Xauthority"
+              }
+            ' "$service_file" > "$tmp_service"
+            mv "$tmp_service" "$service_file"
+          }
+
+          TARGET_USER="${SUDO_USER:-$USER}"
+          TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
+          if [ -z "$TARGET_HOME" ]; then
+            TARGET_HOME="/home/$TARGET_USER"
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            apt-transport-https \
+            devscripts \
+            equivs \
+            debhelper \
+            cdbs \
+            dkms \
+            fxload \
+            libwxgtk3.2-dev \
+            wx-common \
+            wx3.2-i18n \
+            libgtest-dev \
+            libgmock-dev \
+            libboost-all-dev \
+            libeigen3-dev \
+            libhidapi-dev \
+            liblimesuite-dev \
+            libopencv-dev \
+            libv4l-dev \
+            nlohmann-json3-dev \
+            libwebp-dev \
+            gettext \
+            zlib1g-dev
+
+          ensure_modern_libxisf_if_enabled
+
+          phd2_src="artifacts/src/phd2"
+          rm -rf "$phd2_src"
+          mkdir -p "$(dirname "$phd2_src")"
+          git clone --branch "${{ env.PHD2_BRANCH }}" --single-branch "${{ env.PHD2_REPO_URL }}" "$phd2_src"
+
+          for service_candidate in "$phd2_src/debian/phd2.service" "$phd2_src/debian/systemd/phd2.service"; do
+            if [ -f "$service_candidate" ]; then
+              configure_phd2_service_file "$service_candidate" "$TARGET_USER" "$TARGET_HOME"
+            fi
+          done
+
+          sudo bash -lc "set -euo pipefail; \
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+              sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources; \
+            elif [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+              sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources; \
+            elif [ -f /etc/apt/sources.list ]; then \
+              sed -i '/^deb /p; s/^deb /deb-src /' /etc/apt/sources.list; \
+            fi"
+          sudo apt-get update
+
+          projects_home="${HOME}/Projects"
+          mkdir -p "$projects_home" "$projects_home/build"
+
+          indi_core_src="$projects_home/indi-core"
+          indi_core_build="$projects_home/build/indi-core"
+          rm -rf "$indi_core_src" "$indi_core_build"
+          git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi.git "$indi_core_src"
+          cmake -S "$indi_core_src" -B "$indi_core_build" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$indi_core_build" --parallel "$(nproc)"
+          sudo cmake --install "$indi_core_build"
+          sudo ldconfig
+
+          equivs_dir="/tmp/libindi-dev-equivs"
+          rm -rf "$equivs_dir"
+          mkdir -p "$equivs_dir"
+          {
+            echo "Section: misc"
+            echo "Priority: optional"
+            echo "Standards-Version: 4.7.0"
+            echo
+            echo "Package: libindi-dev"
+            echo "Version: ${{ env.PHD2_INDI_VERSION }}"
+            echo "Maintainer: Local Builder <builder@local>"
+            echo "Architecture: all"
+            echo "Description: Dummy libindi-dev package (local build)"
+            echo " Dummy package to satisfy Build-Depends when INDI is built from source."
+          } > "$equivs_dir/control"
+          (
+            cd "$equivs_dir"
+            equivs-build control
+          )
+          sudo dpkg -i "$equivs_dir/libindi-dev_${{ env.PHD2_INDI_VERSION }}_all.deb"
+
+          (
+            cd "$phd2_src"
+            sudo mk-build-deps --install --remove \
+              --tool "apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends -y" \
+              debian/control
+          )
+
+          ensure_opencv_required_version
+
+          if [ "${{ env.PHD2_BUILD_INDI_3RDPARTY }}" = "true" ]; then
+            indi_3p_src="$projects_home/indi-3rdparty"
+            indi_3p_build="$projects_home/build/indi-3rdparty"
+            rm -rf "$indi_3p_src" "$indi_3p_build"
+            git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi-3rdparty.git "$indi_3p_src"
+
+            if cmake -S "$indi_3p_src" -B "$indi_3p_build" \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DINDI_ROOT="${{ env.PHD2_INDI_ROOT }}" \
+              -DCMAKE_PREFIX_PATH="${{ env.PHD2_INDI_ROOT }}:${CMAKE_PREFIX_PATH:-}"; then
+              if cmake --build "$indi_3p_build" --parallel "$(nproc)"; then
+                sudo cmake --install "$indi_3p_build" || true
+                sudo ldconfig || true
+              fi
+            fi
+          fi
+
+          (
+            cd "$phd2_src"
+
+            orig_version="$(sed -n '1s/^.*(\([^)]*\)).*/\1/p' debian/changelog)"
+            if [ -z "$orig_version" ]; then
+              echo "Unable to parse PHD2 debian/changelog version" >&2
+              exit 1
+            fi
+
+            base_version="$(printf '%s' "$orig_version" | sed -E 's/-[A-Za-z0-9.+~]+$//')"
+            new_version="${base_version}-$((30 + GITHUB_RUN_NUMBER))"
+
+            export DEBEMAIL="builder@local"
+            export DEBFULLNAME="Local Builder"
+            dch --noauto-nmu -v "$new_version" "CI x64 build ${GITHUB_RUN_NUMBER}"
+
+            export PKG_CONFIG_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            export LD_LIBRARY_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}"
+            export CMAKE_PREFIX_PATH="${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
+            export OpenCV_DIR="${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4"
+            export DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)"
+
+            dpkg-buildpackage -b -us -uc -a "${{ env.DEB_ARCH }}"
+          )
+
+          mkdir -p artifacts
+          find artifacts/src -maxdepth 3 -type f -name '*.deb' -path '*/phd2*' -exec cp -f {} artifacts/ \;
+
+          phd2_deb="$(find artifacts -maxdepth 1 -type f -name 'phd2_*_*.deb' ! -name '*dbgsym*' | sort | tail -n 1 || true)"
+          if [ -z "$phd2_deb" ]; then
+            echo "Failed to locate built PHD2 .deb artifact" >&2
+            exit 1
+          fi
+
+          dpkg-deb -c "$phd2_deb" | tee /tmp/phd2-deb-contents.txt >/dev/null
+          grep -q './etc/systemd/system/phd2.service' /tmp/phd2-deb-contents.txt || {
+            echo "phd2.service missing inside package" >&2
+            exit 1
+          }
+
+          sha256sum "$phd2_deb" > "$phd2_deb.sha256"
 
       - name: Prepare plugin packaging workspace
         run: |
@@ -1476,6 +1813,8 @@ jobs:
             artifacts/pinsdaemon_*.deb
             artifacts/pins-wandereretasdk_*.deb
             artifacts/pins-wandereretasdk_*.deb.sha256
+            artifacts/phd2_*.deb
+            artifacts/phd2_*.deb.sha256
             artifacts/plugins/*.deb
             artifacts/plugins/*.deb.sha256
           )
@@ -1503,6 +1842,7 @@ jobs:
             artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb
             artifacts/pinsdaemon_*.deb
             artifacts/pins-wandereretasdk_*.deb
+            artifacts/phd2_*.deb
             artifacts/plugins/*.deb
             ${{ steps.firmware_bundle.outputs.path }}
         env:
