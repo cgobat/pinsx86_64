@@ -80,6 +80,38 @@ jobs:
           lfs: true
           submodules: false
 
+      - name: Update submodules (excluding NINA/External)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git lfs install
+
+          excluded_path="NINA/External"
+          while IFS= read -r key; do
+            path="$(git config -f .gitmodules --get "$key" || true)"
+            path="${path//$'\r'/}"
+            path="${path#${path%%[![:space:]]*}}"
+            path="${path%${path##*[![:space:]]}}"
+
+            if [ -z "$path" ]; then
+              echo "Skipping submodule entry with empty path for key: $key" >&2
+              continue
+            fi
+
+            if [ "$path" = "$excluded_path" ]; then
+              echo "Skipping submodule $path"
+              continue
+            fi
+
+            echo "Updating submodule $path"
+            if git submodule update --init --recursive --remote "$path"; then
+              continue
+            fi
+
+            echo "Remote update failed for $path; falling back to pinned commit" >&2
+            git submodule update --init --recursive "$path"
+          done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -164,6 +196,12 @@ jobs:
           fi
 
           # Rebuild NOVAS and sync generated files into the existing external layout.
+          if [ ! -d "NOVAS31" ]; then
+            echo "NOVAS31 submodule directory not found after checkout/update." >&2
+            git submodule status || true
+            ls -la
+            exit 1
+          fi
           pushd NOVAS31 >/dev/null
           make clean || true
           make
