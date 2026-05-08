@@ -61,9 +61,11 @@ jobs:
             libicu-dev \
             rsync
 
-      - name: Checkout repository
+      - name: Checkout PINS source repository
         uses: actions/checkout@v4
         with:
+          repository: nitr57/pins
+          ref: develop
           lfs: true
           submodules: false
 
