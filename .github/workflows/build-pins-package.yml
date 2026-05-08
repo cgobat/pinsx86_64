@@ -61,11 +61,9 @@ jobs:
             libicu-dev \
             rsync
 
-      - name: Checkout PINS source repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: nitr57/pins
-          ref: develop
           lfs: true
           submodules: false
 
@@ -144,9 +142,10 @@ jobs:
           jpleph_url="https://github.com/isbeorn/nina.external/raw/refs/heads/master/JPLEPH"
           curl -L --fail --retry 3 --retry-delay 5 -o "NINA/External/JPLEPH" "$jpleph_url"
 
-          target_runtime="${{ env.TARGET_RUNTIME }}"
           find "NINA/External" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' ! -name "${target_runtime}" -exec rm -rf {} +
           rm -f "NINA/External/.gitignore" "NINA/External/.gitattributes"
+
+          target_runtime="${{ env.TARGET_RUNTIME }}"
 
           if [ ! -d "NINA/External/${target_runtime}" ]; then
             echo "NINA/External/${target_runtime} not found after repository clone" >&2
