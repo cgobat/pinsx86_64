@@ -415,9 +415,20 @@ jobs:
           
           echo "Setting version to $FULL_VERSION"
           sed -i "s/^Version:.*/Version: $FULL_VERSION/" build/DEBIAN/control
+          if grep -q '^Architecture:' build/DEBIAN/control; then
+            sed -i "s/^Architecture:.*/Architecture: ${DEB_ARCH}/" build/DEBIAN/control
+          else
+            printf 'Architecture: %s\n' "${DEB_ARCH}" >> build/DEBIAN/control
+          fi
           
           # Build
           dpkg-deb --root-owner-group --build build "$FILENAME"
+
+          ACTUAL_ARCH=$(dpkg-deb -f "$FILENAME" Architecture)
+          if [ "$ACTUAL_ARCH" != "$DEB_ARCH" ]; then
+            echo "pinsdaemon package architecture mismatch: expected $DEB_ARCH, got $ACTUAL_ARCH" >&2
+            exit 1
+          fi
           
           # Move to artifacts
           mkdir -p ../artifacts

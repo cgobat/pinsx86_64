@@ -55,6 +55,10 @@ FRAMINGASSISTANT_CACHE_URL="${FRAMINGASSISTANT_CACHE_URL:-https://nighttime-imag
 FRAMINGASSISTANT_CACHE_ROOT="${FRAMINGASSISTANT_CACHE_ROOT:-$TARGET_HOME/.local/share/NINA}"
 FRAMINGASSISTANT_CACHE_DIR="${FRAMINGASSISTANT_CACHE_DIR:-$FRAMINGASSISTANT_CACHE_ROOT/FramingAssistantCache}"
 
+SYSTEM_ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+INSTALL_DEBS=()
+SKIPPED_DEBS=()
+
 release_api_url() {
   echo "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tags/${RELEASE_TAG}"
 }
@@ -148,6 +152,32 @@ download_release_debs() {
     fi
   done
 
+  INSTALL_DEBS=()
+  SKIPPED_DEBS=()
+
+  local pkg_arch
+  for deb_file in "${downloaded_debs[@]}"; do
+    pkg_arch="$(dpkg-deb -f "$deb_file" Architecture 2>/dev/null || true)"
+    if [[ -z "$pkg_arch" ]]; then
+      warn "Unable to read package architecture for $(basename "$deb_file"); skipping"
+      SKIPPED_DEBS+=("$deb_file (unknown)")
+      continue
+    fi
+
+    if [[ "$pkg_arch" == "$SYSTEM_ARCH" || "$pkg_arch" == "all" ]]; then
+      INSTALL_DEBS+=("$deb_file")
+    else
+      warn "Skipping $(basename "$deb_file"): internal architecture is '${pkg_arch}', expected '${SYSTEM_ARCH}' or 'all'"
+      SKIPPED_DEBS+=("$deb_file ($pkg_arch)")
+    fi
+  done
+
+  [[ ${#INSTALL_DEBS[@]} -gt 0 ]] || fail "No installable .deb packages remain after architecture validation"
+
+  if [[ ${#SKIPPED_DEBS[@]} -gt 0 ]]; then
+    warn "Skipped ${#SKIPPED_DEBS[@]} package(s) due to architecture mismatch"
+  fi
+
   log "Downloaded ${#downloaded_debs[@]} Debian package(s) to ${DOWNLOAD_DIR}"
 }
 
@@ -239,12 +269,11 @@ install_opencv_4_11() {
 install_release_packages() {
   log "Installing release Debian packages"
 
-  mapfile -t debs < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f -name '*.deb' | sort)
-  [[ ${#debs[@]} -gt 0 ]] || fail "No release .deb packages found in ${DOWNLOAD_DIR}"
+  [[ ${#INSTALL_DEBS[@]} -gt 0 ]] || fail "No validated release .deb packages available for installation"
 
-  run_as_root dpkg -i "${debs[@]}" || true
+  run_as_root dpkg -i "${INSTALL_DEBS[@]}" || true
   run_as_root apt-get -f install -y
-  run_as_root dpkg -i "${debs[@]}"
+  run_as_root dpkg -i "${INSTALL_DEBS[@]}"
 }
 
 verify_indi_server_version() {
@@ -316,6 +345,11 @@ print_summary() {
   echo "Release source: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${RELEASE_TAG}"
   echo "Downloaded packages:"
   find "$DOWNLOAD_DIR" -maxdepth 1 -type f -name '*.deb' -printf '  - %f\n' | sort
+  if [[ ${#SKIPPED_DEBS[@]} -gt 0 ]]; then
+    echo
+    echo "Skipped packages (architecture mismatch):"
+    printf '  - %s\n' "${SKIPPED_DEBS[@]}" | sed 's|.*/||'
+  fi
   echo
   echo "Key versions:"
   echo "  OpenCV: $(get_current_opencv_version || true)"

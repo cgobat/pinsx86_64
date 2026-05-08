@@ -311,7 +311,18 @@ jobs:
             filename="pinsdaemon_${full_version}_${DEB_ARCH}.deb"
 
             sed -i "s/^Version:.*/Version: ${full_version}/" build/DEBIAN/control
+            if grep -q '^Architecture:' build/DEBIAN/control; then
+              sed -i "s/^Architecture:.*/Architecture: ${DEB_ARCH}/" build/DEBIAN/control
+            else
+              printf 'Architecture: %s\n' "${DEB_ARCH}" >> build/DEBIAN/control
+            fi
             dpkg-deb --root-owner-group --build build "$filename"
+
+            actual_arch=$(dpkg-deb -f "$filename" Architecture)
+            if [ "$actual_arch" != "$DEB_ARCH" ]; then
+              echo "pinsdaemon package architecture mismatch: expected $DEB_ARCH, got $actual_arch" >&2
+              return 1
+            fi
             popd >/dev/null
 
             mv "pinsdaemon/${filename}" artifacts/
