@@ -1,19 +1,14 @@
-name: Build INDI Debian Ubuntu 24 Package
+name: Build INDI Debian Trixie Package
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: build-indi-ubuntu24-${{ github.ref }}
+  group: build-indi-trixie-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   INDI_VERSION: 2.1.9
-  INDI_ENABLE_XISF: true
-  LIBXISF_AUTO_UPGRADE_IF_OLD: true
-  LIBXISF_REPO_URL: https://github.com/joxda/libXISF.git
-  LIBXISF_BRANCH: master
-  LIBXISF_INSTALL_PREFIX: /usr/local
   DEB_PACKAGE_RUNTIME: indi-bin
   DEB_PACKAGE_LIB: libindi1
   DEB_PACKAGE_DATA: libindi-data
@@ -23,9 +18,11 @@ env:
   ARTIFACT_DIR: artifacts
 
 jobs:
-  build-indi-ubuntu24:
-    name: Build INDI v2.1.9 for Ubuntu 24 (.deb)
+  build-indi-trixie:
+    name: Build INDI v2.1.9 (.deb)
     runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
     permissions:
       contents: write
 
@@ -35,8 +32,8 @@ jobs:
         run: |
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             ca-certificates \
             git \
             ninja-build \
@@ -77,124 +74,11 @@ jobs:
           set -euo pipefail
           git clone --branch v${{ env.INDI_VERSION }} --depth 1 https://github.com/indilib/indi.git indi
 
-      - name: Ensure modern LibXISF API (shell-script aligned)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ "${{ env.INDI_ENABLE_XISF }}" != "true" ]; then
-            echo "INDI XISF support disabled by configuration."
-            exit 0
-          fi
-
-          has_required_api="false"
-          header_candidates=(
-            "${{ env.LIBXISF_INSTALL_PREFIX }}/include/libxisf.h"
-            "/usr/local/include/libxisf.h"
-            "/usr/include/libxisf.h"
-          )
-
-          for header in "${header_candidates[@]}"; do
-            if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-              has_required_api="true"
-              echo "Detected compatible LibXISF header: $header"
-              break
-            fi
-          done
-
-          if [ "$has_required_api" != "true" ]; then
-            if [ "${{ env.LIBXISF_AUTO_UPGRADE_IF_OLD }}" != "true" ]; then
-              echo "LibXISF lacks required ZSTD API and auto-upgrade is disabled." >&2
-              exit 1
-            fi
-
-            echo "Upgrading LibXISF from source to satisfy required API..."
-            rm -rf artifacts/src/libxisf
-            mkdir -p artifacts/src
-            git clone --depth 1 --branch "${{ env.LIBXISF_BRANCH }}" "${{ env.LIBXISF_REPO_URL }}" artifacts/src/libxisf
-
-            cmake -S artifacts/src/libxisf -B artifacts/src/libxisf/build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX="${{ env.LIBXISF_INSTALL_PREFIX }}" \
-              -DUSE_BUNDLED_LIBS=ON \
-              -DBUILD_SHARED_LIBS=ON
-            cmake --build artifacts/src/libxisf/build --parallel "$(nproc)"
-            sudo cmake --install artifacts/src/libxisf/build
-            sudo ldconfig
-
-            verified="false"
-            for header in "${header_candidates[@]}"; do
-              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-                verified="true"
-                echo "Verified upgraded LibXISF header: $header"
-                break
-              fi
-            done
-
-            if [ "$verified" != "true" ]; then
-              echo "LibXISF upgrade completed but required ZSTD API is still missing." >&2
-              exit 1
-            fi
-          fi
-
-          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
-
-          pkg_paths=(
-            "${{ env.LIBXISF_INSTALL_PREFIX }}/lib/pkgconfig"
-            "${{ env.LIBXISF_INSTALL_PREFIX }}/lib64/pkgconfig"
-          )
-          if [ -n "$multiarch" ]; then
-            pkg_paths+=("${{ env.LIBXISF_INSTALL_PREFIX }}/lib/$multiarch/pkgconfig")
-          fi
-
-          pkg_path=""
-          for p in "${pkg_paths[@]}"; do
-            if [ -d "$p" ]; then
-              pkg_path="$p${pkg_path:+:$pkg_path}"
-            fi
-          done
-          if [ -n "${PKG_CONFIG_PATH:-}" ]; then
-            pkg_path="$pkg_path:${PKG_CONFIG_PATH}"
-          fi
-
-          ld_paths=(
-            "${{ env.LIBXISF_INSTALL_PREFIX }}/lib"
-            "${{ env.LIBXISF_INSTALL_PREFIX }}/lib64"
-          )
-          if [ -n "$multiarch" ]; then
-            ld_paths+=("${{ env.LIBXISF_INSTALL_PREFIX }}/lib/$multiarch")
-          fi
-
-          ld_path=""
-          for p in "${ld_paths[@]}"; do
-            if [ -d "$p" ]; then
-              ld_path="$p${ld_path:+:$ld_path}"
-            fi
-          done
-          if [ -n "${LD_LIBRARY_PATH:-}" ]; then
-            ld_path="$ld_path:${LD_LIBRARY_PATH}"
-          fi
-
-          echo "PKG_CONFIG_PATH=$pkg_path" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${{ env.LIBXISF_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "CMAKE_INCLUDE_PATH=${{ env.LIBXISF_INSTALL_PREFIX }}/include:${CMAKE_INCLUDE_PATH:-}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$ld_path" >> "$GITHUB_ENV"
-
       - name: Configure INDI build
         shell: bash
         working-directory: indi
         run: |
           set -euo pipefail
-
-          indi_xisf_args=()
-          if [ "${{ env.INDI_ENABLE_XISF }}" != "true" ]; then
-            indi_xisf_args+=(
-              -DCMAKE_DISABLE_FIND_PACKAGE_LibXISF=TRUE
-              -DINDI_WITH_XISF=OFF
-              -DWITH_XISF=OFF
-            )
-          fi
-
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
@@ -207,8 +91,7 @@ jobs:
             -DINDI_BUILD_UNITTESTS=OFF \
             -DINDI_BUILD_INTEGTESTS=OFF \
             -DINDI_BUILD_EXAMPLES=OFF \
-            -DINDI_BUILD_STATIC=OFF \
-            "${indi_xisf_args[@]}"
+            -DINDI_BUILD_STATIC=OFF
 
       - name: Compile INDI
         shell: bash
@@ -239,6 +122,7 @@ jobs:
           mkdir -p "$runtime_control_dir" "$lib_control_dir" "$data_control_dir" "$dev_control_dir"
 
           DESTDIR="$full_stage_dir" cmake --install build
+          multiarch_dir="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 
           # -------------------------
           # Runtime package: indi-bin
@@ -247,26 +131,18 @@ jobs:
 
           # Remove development artifacts from runtime package.
           rm -rf "$runtime_root/usr/include"
-          rm -rf "$runtime_root/usr/lib/pkgconfig" "$runtime_root/usr/lib/cmake"
-
-          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
-          if [ -n "$multiarch" ]; then
-            rm -rf "$runtime_root/usr/lib/$multiarch/pkgconfig" "$runtime_root/usr/lib/$multiarch/cmake"
-          fi
+          rm -rf "$runtime_root/usr/lib/pkgconfig" "$runtime_root/usr/lib/$multiarch_dir/pkgconfig"
+          rm -rf "$runtime_root/usr/lib/cmake" "$runtime_root/usr/lib/$multiarch_dir/cmake"
 
           # -------------------------
           # Runtime libraries package: libindi1
           # -------------------------
-          lib_roots=("usr/lib")
-          if [ -n "$multiarch" ]; then
-            lib_roots+=("usr/lib/$multiarch")
-          fi
+          mkdir -p "$lib_root/usr/lib" "$lib_root/usr/lib/$multiarch_dir"
 
-          for librel in "${lib_roots[@]}"; do
+          for librel in "usr/lib" "usr/lib/$multiarch_dir"; do
             runtime_dir="$runtime_root/$librel"
             lib_dir="$lib_root/$librel"
 
-            mkdir -p "$lib_dir"
             if [ -d "$runtime_dir" ]; then
               find "$runtime_dir" -maxdepth 1 -type f -name 'lib*.so.*' -exec cp -a {} "$lib_dir/" \;
               find "$runtime_dir" -maxdepth 1 -type f -name 'lib*.so.*' -delete
@@ -277,12 +153,7 @@ jobs:
           done
 
           # Move INDI runtime plugin/shared-object trees to lib package.
-          plugin_lib_roots=("usr/lib/indi")
-          if [ -n "$multiarch" ]; then
-            plugin_lib_roots+=("usr/lib/$multiarch/indi")
-          fi
-
-          for librel in "${plugin_lib_roots[@]}"; do
+          for librel in "usr/lib/indi" "usr/lib/$multiarch_dir/indi"; do
             runtime_plugin_dir="$runtime_root/$librel"
             lib_plugin_dir="$lib_root/$librel"
             if [ -d "$runtime_plugin_dir" ]; then
@@ -366,7 +237,7 @@ jobs:
             rsync -a "$full_stage_dir/usr/include/" "$dev_root/usr/include/"
           fi
 
-          for rel in "usr/lib/pkgconfig" "usr/lib/cmake"; do
+          for rel in "usr/lib/pkgconfig" "usr/lib/$multiarch_dir/pkgconfig" "usr/lib/cmake" "usr/lib/$multiarch_dir/cmake"; do
             src="$full_stage_dir/$rel"
             dst="$dev_root/$rel"
             if [ -d "$src" ]; then
@@ -375,18 +246,7 @@ jobs:
             fi
           done
 
-          if [ -n "$multiarch" ]; then
-            for rel in "usr/lib/$multiarch/pkgconfig" "usr/lib/$multiarch/cmake"; do
-              src="$full_stage_dir/$rel"
-              dst="$dev_root/$rel"
-              if [ -d "$src" ]; then
-                mkdir -p "$dst"
-                rsync -a "$src/" "$dst/"
-              fi
-            done
-          fi
-
-          for librel in "${lib_roots[@]}"; do
+          for librel in "usr/lib" "usr/lib/$multiarch_dir"; do
             src="$full_stage_dir/$librel"
             dst="$dev_root/$librel"
             if [ -d "$src" ]; then
@@ -509,7 +369,7 @@ jobs:
       - name: Upload INDI Debian artifact
         uses: actions/upload-artifact@v4
         with:
-          name: indi-ubuntu24-deb
+          name: indi-trixie-deb
           path: |
             artifacts/*.deb
             artifacts/*.deb.sha256

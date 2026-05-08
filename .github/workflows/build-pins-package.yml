@@ -1,4 +1,4 @@
-name: Build Linux x64 Ubuntu 24 Package
+name: Build Linux x64 Package
 
 on:
   workflow_dispatch:
@@ -11,38 +11,25 @@ env:
   BUILD_CONFIGURATION: Release
   TARGET_RUNTIME: linux-x64
   PLUGIN_TARGET_FRAMEWORK: net10.0
-  INSTALL_DIRECTORY: /home/ubuntu/pins
+  INSTALL_DIRECTORY: /home/pi/pins
   PUBLISH_DIRECTORY: artifacts/publish
   PACKAGE_ROOT: artifacts/package
   PACKAGE_NAME: pins-linux-x64
   DEB_ROOT: artifacts/debroot
   DEB_PACKAGE: pins
   DEB_ARCH: amd64
-  PLUGINS_INSTALL_BASE: /home/ubuntu/.local/share/NINA/Plugins/3.0.0
+  PLUGINS_INSTALL_BASE: /home/pi/.local/share/NINA/Plugins/3.0.0
   PLUGIN_DEB_BASE: artifacts/plugin-debroot
   PLUGIN_ARTIFACT_DIR: artifacts/plugins
   PLUGIN_MSBUILD_ARGS: -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU -p:SatelliteResourceLanguages="en-US"
   PLUGIN_FAILURES_FILE: artifacts/plugin-build-failures.log
-  INDI_ENABLE_XISF: true
-  LIBXISF_AUTO_UPGRADE_IF_OLD: true
-  LIBXISF_REPO_URL: https://github.com/joxda/libXISF.git
-  LIBXISF_BRANCH: master
-  LIBXISF_INSTALL_PREFIX: /usr/local
-  PHD2_REPO_URL: https://github.com/acocalypso/phd2.git
-  PHD2_BRANCH: master
-  PHD2_INDI_VERSION: 2.1.9
-  PHD2_OPENCV_VERSION: 4.11.0
-  PHD2_BUILD_INDI_3RDPARTY: true
-  PHD2_INDI_ROOT: /usr
-  OPENCV_REQUIRED_VERSION: 4.11.0
-  OPENCV_SOURCE_ROOT: artifacts/src/opencv
-  OPENCV_INSTALL_PREFIX: /usr/local
-  OPENCV_EXTRA_MODULES: true
 
 jobs:
   build-linux-x64:
-    name: Build Ubuntu 24 x64 package and plugin debs
+    name: Build Debian x64 package and plugin debs
     runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
     permissions:
       contents: write
 
@@ -51,8 +38,8 @@ jobs:
         run: |
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             ca-certificates \
             curl \
             git \
@@ -74,266 +61,16 @@ jobs:
             libicu-dev \
             rsync
 
-      - name: Checkout PINS source repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: nitr57/pins
-          ref: develop
           lfs: true
           submodules: false
 
-      - name: Update submodules (excluding NINA/External)
-        shell: bash
-        run: |
-          set -euo pipefail
-          git lfs install
-
-          excluded_path="NINA/External"
-          while IFS= read -r key; do
-            path="$(git config -f .gitmodules --get "$key" || true)"
-            path="${path//$'\r'/}"
-            path="${path#${path%%[![:space:]]*}}"
-            path="${path%${path##*[![:space:]]}}"
-
-            if [ -z "$path" ]; then
-              echo "Skipping submodule entry with empty path for key: $key" >&2
-              continue
-            fi
-
-            if [ "$path" = "$excluded_path" ]; then
-              echo "Skipping submodule $path"
-              continue
-            fi
-
-            echo "Updating submodule $path"
-            if git submodule update --init --recursive --remote "$path"; then
-              continue
-            fi
-
-            echo "Remote update failed for $path; falling back to pinned commit" >&2
-            git submodule update --init --recursive "$path"
-          done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
-
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev libjsoncpp-dev autoconf autoconf-archive libtool pkg-config
-
-      - name: Build prerequisite OpenCV and INDI stacks
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            cmake \
-            ninja-build \
-            pkg-config \
-            wget \
-            unzip \
-            git \
-            libboost-all-dev \
-            libboost-regex-dev \
-            libcfitsio-dev \
-            libcurl4-gnutls-dev \
-            libdc1394-dev \
-            libeigen3-dev \
-            libev-dev \
-            libfftw3-dev \
-            libftdi-dev \
-            libgphoto2-dev \
-            libgsl-dev \
-            libhidapi-dev \
-            libjpeg-dev \
-            libkrb5-dev \
-            liblimesuite-dev \
-            libnova-dev \
-            libraw-dev \
-            librtlsdr-dev \
-            libtheora-dev \
-            libtiff-dev \
-            libusb-1.0-0-dev \
-            libusb-dev \
-            libv4l-dev \
-            libwebp-dev \
-            libwxgtk3.2-dev \
-            libx11-dev \
-            libxisf-dev \
-            nlohmann-json3-dev \
-            wx-common \
-            wx3.2-i18n \
-            zlib1g-dev
-
-          ensure_modern_libxisf_if_enabled() {
-            if [ "${{ env.INDI_ENABLE_XISF }}" != "true" ]; then
-              return 0
-            fi
-
-            has_required_api="false"
-            header_candidates=(
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/include/libxisf.h"
-              "/usr/local/include/libxisf.h"
-              "/usr/include/libxisf.h"
-            )
-
-            for header in "${header_candidates[@]}"; do
-              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-                has_required_api="true"
-                break
-              fi
-            done
-
-            if [ "$has_required_api" != "true" ]; then
-              if [ "${{ env.LIBXISF_AUTO_UPGRADE_IF_OLD }}" != "true" ]; then
-                echo "LibXISF lacks required ZSTD API and auto-upgrade is disabled." >&2
-                return 1
-              fi
-
-              rm -rf artifacts/src/libxisf
-              mkdir -p artifacts/src
-              git clone --depth 1 --branch "${{ env.LIBXISF_BRANCH }}" "${{ env.LIBXISF_REPO_URL }}" artifacts/src/libxisf
-
-              cmake -S artifacts/src/libxisf -B artifacts/src/libxisf/build \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="${{ env.LIBXISF_INSTALL_PREFIX }}" \
-                -DUSE_BUNDLED_LIBS=ON \
-                -DBUILD_SHARED_LIBS=ON
-              cmake --build artifacts/src/libxisf/build --parallel "$(nproc)"
-              sudo cmake --install artifacts/src/libxisf/build
-              sudo ldconfig
-            fi
-
-            has_required_api="false"
-            for header in "${header_candidates[@]}"; do
-              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-                has_required_api="true"
-                break
-              fi
-            done
-
-            if [ "$has_required_api" != "true" ]; then
-              echo "LibXISF upgrade completed but required API is still missing." >&2
-              return 1
-            fi
-
-            multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
-            libxisf_pkg_paths=(
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/lib/pkgconfig"
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/lib64/pkgconfig"
-            )
-            if [ -n "$multiarch" ]; then
-              libxisf_pkg_paths+=("${{ env.LIBXISF_INSTALL_PREFIX }}/lib/$multiarch/pkgconfig")
-            fi
-
-            pkg_prefix=""
-            for p in "${libxisf_pkg_paths[@]}"; do
-              if [ -d "$p" ]; then
-                pkg_prefix="$p${pkg_prefix:+:$pkg_prefix}"
-              fi
-            done
-            if [ -n "$pkg_prefix" ]; then
-              export PKG_CONFIG_PATH="$pkg_prefix${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            fi
-
-            libxisf_lib_paths=(
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/lib"
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/lib64"
-            )
-            if [ -n "$multiarch" ]; then
-              libxisf_lib_paths+=("${{ env.LIBXISF_INSTALL_PREFIX }}/lib/$multiarch")
-            fi
-
-            ld_prefix=""
-            for p in "${libxisf_lib_paths[@]}"; do
-              if [ -d "$p" ]; then
-                ld_prefix="$p${ld_prefix:+:$ld_prefix}"
-              fi
-            done
-            if [ -n "$ld_prefix" ]; then
-              export LD_LIBRARY_PATH="$ld_prefix${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            fi
-
-            export CMAKE_PREFIX_PATH="${{ env.LIBXISF_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
-            export CMAKE_INCLUDE_PATH="${{ env.LIBXISF_INSTALL_PREFIX }}/include:${CMAKE_INCLUDE_PATH:-}"
-          }
-
-          ensure_modern_libxisf_if_enabled
-
-          installed_opencv="$(pkg-config --modversion opencv4 2>/dev/null || true)"
-          required_major_minor="$(echo "${{ env.OPENCV_REQUIRED_VERSION }}" | awk -F. '{print $1"."$2}')"
-
-          if [[ "$installed_opencv" == "${{ env.OPENCV_REQUIRED_VERSION }}" || "$installed_opencv" == "$required_major_minor"* ]]; then
-            echo "OpenCV $installed_opencv already available"
-          else
-            echo "Building OpenCV ${{ env.OPENCV_REQUIRED_VERSION }} from source"
-            rm -rf "${{ env.OPENCV_SOURCE_ROOT }}"
-            mkdir -p "${{ env.OPENCV_SOURCE_ROOT }}"
-
-            wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
-            unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
-
-            cmake_args=(
-              -DCMAKE_BUILD_TYPE=Release
-              -DCMAKE_INSTALL_PREFIX="${{ env.OPENCV_INSTALL_PREFIX }}"
-              -DOPENCV_GENERATE_PKGCONFIG=ON
-            )
-
-            if [ "${{ env.OPENCV_EXTRA_MODULES }}" = "true" ]; then
-              wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv_contrib/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
-              unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
-              cmake_args+=("-DOPENCV_EXTRA_MODULES_PATH=${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}/modules")
-            fi
-
-            cmake -S "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}" -B "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" "${cmake_args[@]}"
-            cmake --build "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" --parallel "$(nproc)"
-            sudo cmake --install "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}"
-            sudo ldconfig
-          fi
-
-          echo "Building INDI core v${{ env.PHD2_INDI_VERSION }}"
-          projects_home="${HOME}/Projects"
-          mkdir -p "$projects_home" "$projects_home/build"
-
-          indi_core_src="$projects_home/indi-core"
-          indi_core_build="$projects_home/build/indi-core"
-          rm -rf "$indi_core_src" "$indi_core_build"
-          git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi.git "$indi_core_src"
-          cmake -S "$indi_core_src" -B "$indi_core_build" \
-            -DCMAKE_INSTALL_PREFIX=/usr \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${{ env.LIBXISF_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}" \
-            -DCMAKE_INCLUDE_PATH="${{ env.LIBXISF_INSTALL_PREFIX }}/include:${CMAKE_INCLUDE_PATH:-}"
-          cmake --build "$indi_core_build" --parallel "$(nproc)"
-          sudo cmake --install "$indi_core_build"
-          sudo ldconfig
-
-          if [ "${{ env.PHD2_BUILD_INDI_3RDPARTY }}" = "true" ]; then
-            echo "Building INDI 3rdparty v${{ env.PHD2_INDI_VERSION }}"
-            indi_3p_src="$projects_home/indi-3rdparty"
-            indi_3p_build="$projects_home/build/indi-3rdparty"
-            rm -rf "$indi_3p_src" "$indi_3p_build"
-            git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi-3rdparty.git "$indi_3p_src"
-
-            cmake -S "$indi_3p_src" -B "$indi_3p_build" \
-              -DCMAKE_INSTALL_PREFIX=/usr \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DINDI_ROOT="${{ env.PHD2_INDI_ROOT }}" \
-              -DCMAKE_PREFIX_PATH="${{ env.PHD2_INDI_ROOT }}:${{ env.OPENCV_INSTALL_PREFIX }}:${{ env.LIBXISF_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}" \
-              -DCMAKE_INCLUDE_PATH="${{ env.LIBXISF_INSTALL_PREFIX }}/include:${CMAKE_INCLUDE_PATH:-}"
-            cmake --build "$indi_3p_build" --parallel "$(nproc)"
-            sudo cmake --install "$indi_3p_build"
-            sudo ldconfig
-          fi
-
-          export PKG_CONFIG_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          export LD_LIBRARY_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}"
-          export CMAKE_PREFIX_PATH="${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
-          echo "OpenCV_DIR=${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}" >> "$GITHUB_ENV"
-          echo "PREREQ_INDI_OPENCV_READY=true" >> "$GITHUB_ENV"
+          apt-get update
+          apt-get install -y libudev-dev libjsoncpp-dev autoconf autoconf-archive libtool pkg-config
 
       - name: Build and install libgpiod 2.2
         shell: bash
@@ -344,8 +81,9 @@ jobs:
           cd libgpiod-2.2
           ./configure --prefix=/usr --enable-tools=yes --enable-bindings-cxx
           make
-          sudo make install
-          sudo ldconfig
+          make install
+          ldconfig
+
       - name: Clone plugins
         shell: bash
         run: |
@@ -399,63 +137,37 @@ jobs:
           git clone --depth 1 --branch main https://github.com/nitr57/pins.external NINA/External
           pushd NINA/External >/dev/null
           git lfs pull || true
-          if [ -f .gitmodules ]; then
-            git submodule sync --recursive || true
-            git submodule update --init --recursive
-          fi
           popd >/dev/null
 
           jpleph_url="https://github.com/isbeorn/nina.external/raw/refs/heads/master/JPLEPH"
           curl -L --fail --retry 3 --retry-delay 5 -o "NINA/External/JPLEPH" "$jpleph_url"
 
-          rm -f "NINA/External/.gitignore" "NINA/External/.gitattributes"
-
           target_runtime="${{ env.TARGET_RUNTIME }}"
+          find "NINA/External" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' ! -name "${target_runtime}" -exec rm -rf {} +
+          rm -f "NINA/External/.gitignore" "NINA/External/.gitattributes"
 
           if [ ! -d "NINA/External/${target_runtime}" ]; then
             echo "NINA/External/${target_runtime} not found after repository clone" >&2
             exit 1
           fi
 
-          # Rebuild NOVAS from source (prefer sources in pins.external clone).
-          novas_source_dir=""
-          if [ -d "NINA/External/NOVAS31" ]; then
-            novas_source_dir="NINA/External/NOVAS31"
-          elif [ -d "NOVAS31" ]; then
-            novas_source_dir="NOVAS31"
-          else
-            echo "NOVAS31 source directory not found in NINA/External or workspace root." >&2
-            ls -la NINA/External || true
-            exit 1
-          fi
-
-          pushd "$novas_source_dir" >/dev/null
+          # Rebuild NOVAS and sync generated files into the existing external layout.
+          pushd NOVAS31 >/dev/null
           make clean || true
           make
           popd >/dev/null
 
           mkdir -p "NINA/External/${target_runtime}/NOVAS"
-          cp -f "$novas_source_dir/libnovas_c.so" "NINA/External/${target_runtime}/NOVAS/libnovas_c.so"
-          cp -f "$novas_source_dir/cio_ra.bin" "NINA/External/${target_runtime}/NOVAS/cio_ra.bin"
+          cp -f NOVAS31/libnovas_c.so "NINA/External/${target_runtime}/NOVAS/libnovas_c.so"
+          cp -f NOVAS31/cio_ra.bin "NINA/External/${target_runtime}/NOVAS/cio_ra.bin"
 
           if [ ! -f "NINA/External/JPLEPH" ]; then
             echo "NINA/External/JPLEPH not found" >&2
             exit 1
           fi
 
-          # Rebuild SOFA from source (prefer sources in pins.external clone).
-          sofa_source_dir=""
-          if [ -d "NINA/External/SOFA/SOFA/src" ]; then
-            sofa_source_dir="NINA/External/SOFA/SOFA/src"
-          elif [ -d "SOFA/SOFA/src" ]; then
-            sofa_source_dir="SOFA/SOFA/src"
-          else
-            echo "SOFA source directory not found in NINA/External or workspace root." >&2
-            ls -la NINA/External || true
-            exit 1
-          fi
-
-          pushd "$sofa_source_dir" >/dev/null
+          # SOFA makefile builds static lib by default, so build a shared object explicitly.
+          pushd SOFA/SOFA/src >/dev/null
           make clean || true
           make
           rm -f ./*.o libsofa_c.so
@@ -469,7 +181,7 @@ jobs:
           popd >/dev/null
 
           mkdir -p "NINA/External/${target_runtime}/SOFA"
-          cp -f "$sofa_source_dir/libsofa_c.so" "NINA/External/${target_runtime}/SOFA/libsofa_c.so"
+          cp -f SOFA/SOFA/src/libsofa_c.so "NINA/External/${target_runtime}/SOFA/libsofa_c.so"
 
           # Keep only NOVAS and SOFA under the runtime-specific external folder.
           find "NINA/External/${target_runtime}" -mindepth 1 -maxdepth 1 ! -name 'NOVAS' ! -name 'SOFA' -exec rm -rf {} +
@@ -498,38 +210,6 @@ jobs:
         run: |
           dotnet restore NINA/NINA.csproj -r ${{ env.TARGET_RUNTIME }}
           dotnet restore System.Windows.Compat/System.Windows.Compat.csproj
-
-      - name: Stage OpenCvSharp runtime from NuGet
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          runtime_version=$(sed -n 's/.*OpenCvSharp4\.official\.runtime\.\$(RuntimeIdentifier)" Version="\([^"]*\)".*/\1/p' NINA/NINA.csproj | head -n 1)
-          if [ -z "$runtime_version" ]; then
-            echo "Could not parse OpenCvSharp runtime package version from NINA/NINA.csproj" >&2
-            exit 1
-          fi
-
-          nuget_global_packages=$(dotnet nuget locals global-packages --list | sed -n 's/^global-packages: //p' | head -n 1)
-          if [ -z "$nuget_global_packages" ]; then
-            echo "Could not determine NuGet global-packages path" >&2
-            exit 1
-          fi
-
-          package_so="$nuget_global_packages/opencvsharp4.official.runtime.linux-x64/$runtime_version/runtimes/linux-x64/native/libOpenCvSharpExtern.so"
-          if [ ! -f "$package_so" ]; then
-            echo "OpenCvSharp runtime not in cache after restore, retrying restore" >&2
-            dotnet restore NINA/NINA.csproj -r ${{ env.TARGET_RUNTIME }}
-          fi
-
-          if [ ! -f "$package_so" ]; then
-            echo "OpenCvSharp runtime library not found: $package_so" >&2
-            exit 1
-          fi
-
-          mkdir -p "NINA/External/${{ env.TARGET_RUNTIME }}"
-          cp -f "$package_so" "NINA/External/${{ env.TARGET_RUNTIME }}/libOpenCvSharpExtern.so"
-          chmod 755 "NINA/External/${{ env.TARGET_RUNTIME }}/libOpenCvSharpExtern.so"
 
       - name: Build System.Windows.Compat
         run: dotnet build System.Windows.Compat/System.Windows.Compat.csproj -c ${{ env.BUILD_CONFIGURATION }} --no-restore
@@ -589,7 +269,7 @@ jobs:
           echo "value=$release_version" >> "$GITHUB_OUTPUT"
           echo "date=$release_date" >> "$GITHUB_OUTPUT"
 
-      - name: Stage /home/ubuntu/pins layout
+      - name: Stage install layout
         run: |
           publish_root="${{ env.PUBLISH_DIRECTORY }}/${{ env.TARGET_RUNTIME }}"
           package_root="${{ env.PACKAGE_ROOT }}"
@@ -615,7 +295,9 @@ jobs:
       - name: Prepare Debian filesystem
         run: |
           deb_root="${{ env.DEB_ROOT }}"
-          install_root="$deb_root/${{ env.INSTALL_DIRECTORY }}"
+          install_path="${{ env.INSTALL_DIRECTORY }}"
+          install_path="${install_path#/}"
+          install_root="$deb_root/$install_path"
           rm -rf "$deb_root"
           mkdir -p "$install_root"
           rsync -a "${{ env.PACKAGE_ROOT }}/pins/" "$install_root/"
@@ -625,18 +307,8 @@ jobs:
           deb_root="${{ env.DEB_ROOT }}"
           service_path="$deb_root/etc/systemd/system/pins.service"
           service_dir="$(dirname "$service_path")"
-          target_user="${SUDO_USER:-$USER}"
-          host_multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
           mkdir -p "$service_dir"
           cp packaging/systemd/pins.service "$service_path"
-          sed -i \
-            -e "s|/home/pi/pins|${{ env.INSTALL_DIRECTORY }}|g" \
-            -e "s|User=pi|User=${target_user}|g" \
-            -e "s|Group=pi|Group=${target_user}|g" \
-            "$service_path"
-          if [ -n "$host_multiarch" ]; then
-            sed -i -e "s|aarch64-linux-gnu|$host_multiarch|g" "$service_path"
-          fi
           chmod 644 "$service_path"
 
       - name: Add Debian maintainer scripts
@@ -646,12 +318,6 @@ jobs:
           mkdir -p "$control_dir"
           cp packaging/debian/postinst "$control_dir/postinst"
           cp packaging/debian/prerm "$control_dir/prerm"
-          target_user="${SUDO_USER:-$USER}"
-          sed -i \
-            -e "s|chown -R pi:pi|chown -R ${target_user}:${target_user}|g" \
-            -e "s|chown pi:pi|chown ${target_user}:${target_user}|g" \
-            -e "s|/home/pi/pins|${{ env.INSTALL_DIRECTORY }}|g" \
-            "$control_dir/postinst"
           chmod 755 "$control_dir/postinst" "$control_dir/prerm"
 
       - name: Build Debian package
@@ -659,7 +325,9 @@ jobs:
           deb_root="${{ env.DEB_ROOT }}"
           control_dir="$deb_root/DEBIAN"
           mkdir -p "$control_dir"
-          installed_size=$(du -sk "$deb_root/${{ env.INSTALL_DIRECTORY }}" | cut -f1)
+          install_path="${{ env.INSTALL_DIRECTORY }}"
+          install_path="${install_path#/}"
+          installed_size=$(du -sk "$deb_root/$install_path" | cut -f1)
           {
             echo "Package: ${{ env.DEB_PACKAGE }}"
             echo "Version: ${{ steps.version.outputs.package_version }}"
@@ -668,7 +336,7 @@ jobs:
             echo "Architecture: ${{ env.DEB_ARCH }}"
             echo "Maintainer: PINS Team"
             echo "Installed-Size: $installed_size"
-            echo "Description: Pins build for Ubuntu 24 x64"
+            echo "Description: Pins build for Debian Linux x64"
           } > "$control_dir/control"
           dpkg-deb --root-owner-group --build "$deb_root" "artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb"
 
@@ -676,7 +344,7 @@ jobs:
         run: |
           sha256sum "artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb" > "artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb.sha256"
 
-      - name: Upload Ubuntu 24 x64 package
+      - name: Upload x64 package
         uses: actions/upload-artifact@v4
         with:
           name: linux-x64-package
@@ -694,13 +362,12 @@ jobs:
       - name: Build PinsDaemon Package
         working-directory: pinsdaemon
         run: |
-          TARGET_USER="${SUDO_USER:-$USER}"
           mkdir -p build/opt/pinsdaemon
           mkdir -p build/usr/local/bin
           mkdir -p build/etc/systemd/system
           mkdir -p build/etc/NetworkManager/dispatcher.d
           mkdir -p build/etc/sudoers.d
-          mkdir -p build/home/$TARGET_USER/pins-scripts
+          mkdir -p build/home/pi/pins-scripts
           mkdir -p build/lib/udev/rules.d
           mkdir -p build/DEBIAN
           
@@ -720,7 +387,7 @@ jobs:
           cp scripts/install-indi-package.sh build/usr/local/bin/
           
           # Hotspot hook script
-          cp scripts/hotspot.sh build/home/$TARGET_USER/pins-scripts/
+          cp scripts/hotspot.sh build/home/pi/pins-scripts/
 
           # NetworkManager runtime recovery hook
           cp scripts/90-pins-wifi-recovery build/etc/NetworkManager/dispatcher.d/
@@ -743,7 +410,7 @@ jobs:
           # Versioning
           BASE_VERSION=$(grep "^Version:" packaging/DEBIAN/control | awk '{print $2}')
           FULL_VERSION="${BASE_VERSION}-${{ github.run_number }}"
-          FILENAME="pinsdaemon_${FULL_VERSION}_amd64.deb"
+          FILENAME="pinsdaemon_${FULL_VERSION}_${{ env.DEB_ARCH }}.deb"
           
           echo "Setting version to $FULL_VERSION"
           sed -i "s/^Version:.*/Version: $FULL_VERSION/" build/DEBIAN/control
@@ -809,302 +476,6 @@ jobs:
           deb_path="artifacts/${deb_package}_${sdk_version}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb"
           dpkg-deb --root-owner-group --build "$deb_root" "$deb_path"
           sha256sum "$deb_path" > "$deb_path.sha256"
-
-      - name: Build PHD2 Debian package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ensure_modern_libxisf_if_enabled() {
-            if [ "${{ env.INDI_ENABLE_XISF }}" != "true" ]; then
-              return 0
-            fi
-
-            has_required_api="false"
-            header_candidates=(
-              "${{ env.LIBXISF_INSTALL_PREFIX }}/include/libxisf.h"
-              "/usr/local/include/libxisf.h"
-              "/usr/include/libxisf.h"
-            )
-
-            for header in "${header_candidates[@]}"; do
-              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-                has_required_api="true"
-                break
-              fi
-            done
-
-            if [ "$has_required_api" = "true" ]; then
-              return 0
-            fi
-
-            if [ "${{ env.LIBXISF_AUTO_UPGRADE_IF_OLD }}" != "true" ]; then
-              echo "LibXISF lacks required ZSTD API and auto-upgrade is disabled." >&2
-              return 1
-            fi
-
-            rm -rf artifacts/src/libxisf
-            mkdir -p artifacts/src
-            git clone --depth 1 --branch "${{ env.LIBXISF_BRANCH }}" "${{ env.LIBXISF_REPO_URL }}" artifacts/src/libxisf
-
-            cmake -S artifacts/src/libxisf -B artifacts/src/libxisf/build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX="${{ env.LIBXISF_INSTALL_PREFIX }}" \
-              -DUSE_BUNDLED_LIBS=ON \
-              -DBUILD_SHARED_LIBS=ON
-            cmake --build artifacts/src/libxisf/build --parallel "$(nproc)"
-            sudo cmake --install artifacts/src/libxisf/build
-            sudo ldconfig
-
-            for header in "${header_candidates[@]}"; do
-              if [ -f "$header" ] && grep -q 'CompressionCodecSupported' "$header" && grep -q 'ZSTD' "$header"; then
-                return 0
-              fi
-            done
-
-            echo "LibXISF upgrade completed but required API is still missing." >&2
-            return 1
-          }
-
-          ensure_opencv_required_version() {
-            installed="$(pkg-config --modversion opencv4 2>/dev/null || true)"
-            required_major_minor="$(echo "${{ env.OPENCV_REQUIRED_VERSION }}" | awk -F. '{print $1"."$2}')"
-
-            if [[ "$installed" == "${{ env.OPENCV_REQUIRED_VERSION }}" || "$installed" == "$required_major_minor"* ]]; then
-              return 0
-            fi
-
-            rm -rf "${{ env.OPENCV_SOURCE_ROOT }}"
-            mkdir -p "${{ env.OPENCV_SOURCE_ROOT }}"
-
-            wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
-            unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
-
-            cmake_args=(
-              -DCMAKE_BUILD_TYPE=Release
-              -DCMAKE_INSTALL_PREFIX="${{ env.OPENCV_INSTALL_PREFIX }}"
-              -DOPENCV_GENERATE_PKGCONFIG=ON
-            )
-
-            if [ "${{ env.OPENCV_EXTRA_MODULES }}" = "true" ]; then
-              wget -O "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" "https://github.com/opencv/opencv_contrib/archive/refs/tags/${{ env.OPENCV_REQUIRED_VERSION }}.zip"
-              unzip -q "${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}.zip" -d "${{ env.OPENCV_SOURCE_ROOT }}"
-              cmake_args+=("-DOPENCV_EXTRA_MODULES_PATH=${{ env.OPENCV_SOURCE_ROOT }}/opencv_contrib-${{ env.OPENCV_REQUIRED_VERSION }}/modules")
-            fi
-
-            cmake -S "${{ env.OPENCV_SOURCE_ROOT }}/opencv-${{ env.OPENCV_REQUIRED_VERSION }}" -B "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" "${cmake_args[@]}"
-            cmake --build "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}" --parallel "$(nproc)"
-            sudo cmake --install "${{ env.OPENCV_SOURCE_ROOT }}/build-${{ env.OPENCV_REQUIRED_VERSION }}"
-            sudo ldconfig
-
-            export PKG_CONFIG_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-            export LD_LIBRARY_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}"
-            export CMAKE_PREFIX_PATH="${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
-            export OpenCV_DIR="${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4"
-          }
-
-          configure_phd2_service_file() {
-            local service_file="$1"
-            local target_user="$2"
-            local target_home="$3"
-            [ -f "$service_file" ] || return
-
-            sed -i \
-              -e "s|^User=.*|User=${target_user}|" \
-              -e "s|^Group=.*|Group=${target_user}|" \
-              -e "s|^Environment=DISPLAY=.*|Environment=DISPLAY=:0|" \
-              -e "s|^Environment=XAUTHORITY=.*|Environment=XAUTHORITY=${target_home}/.Xauthority|" \
-              -e "s|^Environment=HOME=.*|Environment=HOME=${target_home}|" \
-              -e "s|^WorkingDirectory=.*|WorkingDirectory=${target_home}|" \
-              -e "s|^Restart=.*|Restart=on-failure|" \
-              -e "s|/home/pi|${target_home}|g" \
-              "$service_file"
-
-            local tmp_service
-            tmp_service="$(mktemp)"
-            awk -v home="${target_home}" '
-              /^ConditionPathExists=\/tmp\/\.X11-unix\/X0$/ { next }
-              /^ConditionPathExists=.*\.Xauthority$/ { next }
-              { print }
-              $0 ~ /^After=.*graphical\.target/ {
-                print "ConditionPathExists=/tmp/.X11-unix/X0"
-                print "ConditionPathExists=" home "/.Xauthority"
-              }
-            ' "$service_file" > "$tmp_service"
-            mv "$tmp_service" "$service_file"
-          }
-
-          TARGET_USER="${SUDO_USER:-$USER}"
-          TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
-          if [ -z "$TARGET_HOME" ]; then
-            TARGET_HOME="/home/$TARGET_USER"
-          fi
-
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            apt-transport-https \
-            devscripts \
-            equivs \
-            debhelper \
-            cdbs \
-            dkms \
-            fxload \
-            libwxgtk3.2-dev \
-            wx-common \
-            wx3.2-i18n \
-            libgtest-dev \
-            libgmock-dev \
-            libboost-all-dev \
-            libeigen3-dev \
-            libhidapi-dev \
-            liblimesuite-dev \
-            libopencv-dev \
-            libv4l-dev \
-            nlohmann-json3-dev \
-            libwebp-dev \
-            gettext \
-            zlib1g-dev
-
-          ensure_modern_libxisf_if_enabled
-
-          phd2_src="artifacts/src/phd2"
-          rm -rf "$phd2_src"
-          mkdir -p "$(dirname "$phd2_src")"
-          git clone --branch "${{ env.PHD2_BRANCH }}" --single-branch "${{ env.PHD2_REPO_URL }}" "$phd2_src"
-
-          for service_candidate in "$phd2_src/debian/phd2.service" "$phd2_src/debian/systemd/phd2.service"; do
-            if [ -f "$service_candidate" ]; then
-              configure_phd2_service_file "$service_candidate" "$TARGET_USER" "$TARGET_HOME"
-            fi
-          done
-
-          sudo bash -lc "set -euo pipefail; \
-            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-              sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources; \
-            elif [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-              sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources; \
-            elif [ -f /etc/apt/sources.list ]; then \
-              sed -i '/^deb /p; s/^deb /deb-src /' /etc/apt/sources.list; \
-            fi"
-          sudo apt-get update
-
-          projects_home="${HOME}/Projects"
-          mkdir -p "$projects_home" "$projects_home/build"
-
-          echo "Building required INDI core v${{ env.PHD2_INDI_VERSION }} for PHD2"
-          indi_core_built="false"
-          indi_core_src="$projects_home/indi-core"
-          indi_core_build="$projects_home/build/indi-core"
-          rm -rf "$indi_core_src" "$indi_core_build"
-          git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi.git "$indi_core_src"
-          cmake -S "$indi_core_src" -B "$indi_core_build" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$indi_core_build" --parallel "$(nproc)"
-          sudo cmake --install "$indi_core_build"
-          sudo ldconfig
-          indi_core_built="true"
-
-          if [ "$indi_core_built" != "true" ]; then
-            echo "INDI core build did not complete successfully; aborting PHD2 packaging." >&2
-            exit 1
-          fi
-
-          equivs_dir="/tmp/libindi-dev-equivs"
-          rm -rf "$equivs_dir"
-          mkdir -p "$equivs_dir"
-          {
-            echo "Section: misc"
-            echo "Priority: optional"
-            echo "Standards-Version: 4.7.0"
-            echo
-            echo "Package: libindi-dev"
-            echo "Version: ${{ env.PHD2_INDI_VERSION }}"
-            echo "Maintainer: Local Builder <builder@local>"
-            echo "Architecture: all"
-            echo "Description: Dummy libindi-dev package (local build)"
-            echo " Dummy package to satisfy Build-Depends when INDI is built from source."
-          } > "$equivs_dir/control"
-          (
-            cd "$equivs_dir"
-            equivs-build control
-          )
-          sudo dpkg -i "$equivs_dir/libindi-dev_${{ env.PHD2_INDI_VERSION }}_all.deb"
-
-          (
-            cd "$phd2_src"
-            sudo mk-build-deps --install --remove \
-              --tool "apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends -y" \
-              debian/control
-          )
-
-          ensure_opencv_required_version
-
-          indi_3p_built="false"
-          if [ "${{ env.PHD2_BUILD_INDI_3RDPARTY }}" = "true" ]; then
-            echo "Building required INDI 3rdparty v${{ env.PHD2_INDI_VERSION }} for PHD2"
-            indi_3p_src="$projects_home/indi-3rdparty"
-            indi_3p_build="$projects_home/build/indi-3rdparty"
-            rm -rf "$indi_3p_src" "$indi_3p_build"
-            git clone --depth 1 --branch "v${{ env.PHD2_INDI_VERSION }}" https://github.com/indilib/indi-3rdparty.git "$indi_3p_src"
-
-            if cmake -S "$indi_3p_src" -B "$indi_3p_build" \
-              -DCMAKE_INSTALL_PREFIX=/usr \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DINDI_ROOT="${{ env.PHD2_INDI_ROOT }}" \
-              -DCMAKE_PREFIX_PATH="${{ env.PHD2_INDI_ROOT }}:${CMAKE_PREFIX_PATH:-}"; then
-              if cmake --build "$indi_3p_build" --parallel "$(nproc)"; then
-                sudo cmake --install "$indi_3p_build"
-                sudo ldconfig
-                indi_3p_built="true"
-              fi
-            fi
-
-            if [ "$indi_3p_built" != "true" ]; then
-              echo "INDI 3rdparty build is required for PHD2 but did not complete successfully." >&2
-              exit 1
-            fi
-          fi
-
-          (
-            cd "$phd2_src"
-
-            orig_version="$(sed -n '1s/^.*(\([^)]*\)).*/\1/p' debian/changelog)"
-            if [ -z "$orig_version" ]; then
-              echo "Unable to parse PHD2 debian/changelog version" >&2
-              exit 1
-            fi
-
-            base_version="$(printf '%s' "$orig_version" | sed -E 's/-[A-Za-z0-9.+~]+$//')"
-            new_version="${base_version}-$((30 + GITHUB_RUN_NUMBER))"
-
-            export DEBEMAIL="builder@local"
-            export DEBFULLNAME="Local Builder"
-            dch --noauto-nmu -v "$new_version" "CI x64 build ${GITHUB_RUN_NUMBER}"
-
-            export PKG_CONFIG_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-            export LD_LIBRARY_PATH="${{ env.OPENCV_INSTALL_PREFIX }}/lib:${LD_LIBRARY_PATH:-}"
-            export CMAKE_PREFIX_PATH="${{ env.OPENCV_INSTALL_PREFIX }}:${CMAKE_PREFIX_PATH:-}"
-            export OpenCV_DIR="${{ env.OPENCV_INSTALL_PREFIX }}/lib/cmake/opencv4"
-            export DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)"
-
-            dpkg-buildpackage -b -us -uc -a "${{ env.DEB_ARCH }}"
-          )
-
-          mkdir -p artifacts
-          find artifacts/src -maxdepth 3 -type f -name '*.deb' -path '*/phd2*' -exec cp -f {} artifacts/ \;
-
-          phd2_deb="$(find artifacts -maxdepth 1 -type f -name 'phd2_*_*.deb' ! -name '*dbgsym*' | sort | tail -n 1 || true)"
-          if [ -z "$phd2_deb" ]; then
-            echo "Failed to locate built PHD2 .deb artifact" >&2
-            exit 1
-          fi
-
-          dpkg-deb -c "$phd2_deb" | tee /tmp/phd2-deb-contents.txt >/dev/null
-          grep -q './etc/systemd/system/phd2.service' /tmp/phd2-deb-contents.txt || {
-            echo "phd2.service missing inside package" >&2
-            exit 1
-          }
-
-          sha256sum "$phd2_deb" > "$phd2_deb.sha256"
 
       - name: Prepare plugin packaging workspace
         run: |
@@ -1192,9 +563,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1293,9 +664,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1390,9 +761,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1487,9 +858,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1584,9 +955,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1688,9 +1059,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} \"${{ env.PLUGINS_INSTALL_BASE }}/$install_folder\" || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi \"${{ env.PLUGINS_INSTALL_BASE }}/$install_folder\" || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1785,9 +1156,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -1890,9 +1261,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -2059,9 +1430,9 @@ jobs:
               echo "#!/bin/sh"
               echo "set -e"
               # Ensure parent directories have correct ownership
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
-              echo "chown ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }} || true"
-              echo "chown -R ${SUDO_USER:-$USER}:${SUDO_USER:-$USER} ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
+              echo "chown pi:pi $(dirname ${{ env.PLUGINS_INSTALL_BASE }}) || true"
+              echo "chown pi:pi ${{ env.PLUGINS_INSTALL_BASE }} || true"
+              echo "chown -R pi:pi ${{ env.PLUGINS_INSTALL_BASE }}/$install_folder || true"
               echo "exit 0"
             } > "$control_dir/postinst"
             chmod 755 "$control_dir/postinst"
@@ -2105,8 +1476,6 @@ jobs:
             artifacts/pinsdaemon_*.deb
             artifacts/pins-wandereretasdk_*.deb
             artifacts/pins-wandereretasdk_*.deb.sha256
-            artifacts/phd2_*.deb
-            artifacts/phd2_*.deb.sha256
             artifacts/plugins/*.deb
             artifacts/plugins/*.deb.sha256
           )
@@ -2129,12 +1498,11 @@ jobs:
           tag_name: ${{ steps.release_tag.outputs.value }}
           name: Release ${{ steps.release_tag.outputs.value }}
           body: |
-            Automated release ${{ steps.release_tag.outputs.value }} containing the Ubuntu 24 x64 build and plugin Debian packages.
+            Automated release ${{ steps.release_tag.outputs.value }} containing the Debian Linux x64 build and plugin Debian packages.
           files: |
             artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb
             artifacts/pinsdaemon_*.deb
             artifacts/pins-wandereretasdk_*.deb
-            artifacts/phd2_*.deb
             artifacts/plugins/*.deb
             ${{ steps.firmware_bundle.outputs.path }}
         env:
