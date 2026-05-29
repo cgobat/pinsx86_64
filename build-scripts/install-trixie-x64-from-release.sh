@@ -281,8 +281,8 @@ verify_indi_server_version() {
   version="$(dpkg-query -W -f='${Version}' indi-bin 2>/dev/null || true)"
   [[ -n "$version" ]] || fail "indi-bin package is not installed"
 
-  if [[ "$version" != 2.1.9* ]]; then
-    fail "indi-bin version is ${version}, expected 2.1.9.x"
+  if [[ "$version" != 2.2* ]]; then
+    fail "indi-bin version is ${version}, expected 2.2.x"
   fi
 
   log "INDI server package version ${version} installed"
