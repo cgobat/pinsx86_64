@@ -73,7 +73,7 @@ jobs:
         with:
           repository: acocalypso/pins
           ref: develop
-          lfs: true
+          lfs: false
           submodules: false
 
       - name: Setup .NET 10 SDK
@@ -130,11 +130,10 @@ jobs:
           cd ..
 
           rm -rf NINA/External
-          git clone --depth 1 --branch main https://github.com/nitr57/pins.external NINA/External
-          pushd NINA/External >/dev/null
-          git lfs pull || true
-          popd >/dev/null
+          GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch main https://github.com/nitr57/pins.external NINA/External
 
+          # JPLEPH is stored through Git LFS in pins.external. Avoid consuming LFS
+          # bandwidth during CI by downloading it from the upstream raw mirror instead.
           jpleph_url="https://github.com/isbeorn/nina.external/raw/refs/heads/master/JPLEPH"
           curl -L --fail --retry 3 --retry-delay 5 -o "NINA/External/JPLEPH" "$jpleph_url"
 
@@ -147,9 +146,23 @@ jobs:
           fi
 
           # Rebuild NOVAS and sync generated files into the existing external layout.
+          # The checkout intentionally skips Git LFS, so CIO_RA.TXT may be only a
+          # small LFS pointer. Fetch the real data file before running cio_file;
+          # otherwise the generator can loop for several minutes and fail.
+          cio_txt="NOVAS31/NOVAS31/CIO_RA.TXT"
+          if grep -q 'git-lfs.github.com/spec' "$cio_txt"; then
+            echo "$cio_txt is a Git LFS pointer; fetching the real file"
+            git lfs pull --include="$cio_txt" --exclude="" || true
+          fi
+          if grep -q 'git-lfs.github.com/spec' "$cio_txt"; then
+            echo "Failed to fetch the real $cio_txt from Git LFS" >&2
+            echo "Cannot generate NOVAS cio_ra.bin from an LFS pointer file" >&2
+            exit 1
+          fi
+
           pushd NOVAS31 >/dev/null
           make clean || true
-          make
+          timeout 120s make
           popd >/dev/null
 
           mkdir -p "NINA/External/${TARGET_RUNTIME}/NOVAS"
