@@ -11,14 +11,14 @@ env:
   BUILD_CONFIGURATION: Release
   TARGET_RUNTIME: linux-x64
   PLUGIN_TARGET_FRAMEWORK: net10.0
-  INSTALL_DIRECTORY: /home/pi/pins
+  INSTALL_DIRECTORY: /opt/pins
   PUBLISH_DIRECTORY: artifacts/publish
   PACKAGE_ROOT: artifacts/package
   PACKAGE_NAME: pins-linux-x64
   DEB_ROOT: artifacts/debroot
   DEB_PACKAGE: pins
   DEB_ARCH: amd64
-  PLUGINS_INSTALL_BASE: /home/pi/.local/share/NINA/Plugins/3.0.0
+  PLUGINS_INSTALL_BASE: /usr/share/NINA/Plugins/3.0.0
   PLUGIN_DEB_BASE: artifacts/plugin-debroot
   PLUGIN_ARTIFACT_DIR: artifacts/plugins
   PLUGIN_MSBUILD_ARGS: -p:DisableImplicitSystemDrawingReference=true -p:Platform=AnyCPU -p:PlatformTarget=AnyCPU -p:SatelliteResourceLanguages="en-US"
