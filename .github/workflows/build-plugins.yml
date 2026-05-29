@@ -2,27 +2,6 @@ name: Build plugin packages
 
 on:
   workflow_dispatch:
-    inputs:
-      plugin:
-        description: Plugin package to build, or all
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - plugin-alpaca
-          - plugin-groundstation
-          - plugin-joko
-          - plugin-livestack
-          - plugin-nightsummary
-          - plugin-ninaapi
-          - plugin-orbitals
-          - plugin-orbuculum
-          - plugin-phd2tools
-          - plugin-pins
-          - plugin-polaralignment
-          - plugin-tenmicron
-          - plugin-touch-n-stars
 
 permissions:
   contents: read
@@ -46,7 +25,6 @@ jobs:
           - plugin-polaralignment
           - plugin-tenmicron
           - plugin-touch-n-stars
-    if: ${{ github.event.inputs.plugin == 'all' || github.event.inputs.plugin == matrix.package_key }}
     uses: ./.github/workflows/build-single-package.yml
     with:
       package_key: ${{ matrix.package_key }}
