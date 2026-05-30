@@ -49,8 +49,10 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates \
             curl \
+            doxygen \
             git \
             gnupg \
+            help2man \
             wget \
             default-jre-headless \
             build-essential \
