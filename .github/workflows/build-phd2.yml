@@ -19,7 +19,7 @@ jobs:
           apt-get install -y ca-certificates git git-lfs curl
 
       - name: Checkout PHD2 source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: acocalypso/phd2
           submodules: recursive
@@ -176,7 +176,7 @@ jobs:
           echo "release_name=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           name: ${{ steps.tag.outputs.release_name }}

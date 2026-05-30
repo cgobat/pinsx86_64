@@ -62,9 +62,9 @@ jobs:
             rsync
 
       - name: Checkout PINS source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          repository: nitr57/pins
+          repository: acocalypso/pins
           ref: develop
           lfs: true
           submodules: false
@@ -192,12 +192,12 @@ jobs:
           echo "External bundle populated from repository clone into NINA/External"
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-${{ runner.arch }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/global.json', '**/nuget.config') }}
@@ -205,7 +205,7 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-nuget-
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22.x'
 
@@ -348,7 +348,7 @@ jobs:
           sha256sum "artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb" > "artifacts/${{ env.DEB_PACKAGE }}_${{ steps.version.outputs.package_version }}_${{ env.DEB_ARCH }}_${{ steps.release_tag.outputs.date }}.deb.sha256"
 
       - name: Upload x64 package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-x64-package
           path: |
@@ -357,7 +357,7 @@ jobs:
           retention-days: 30
 
       - name: Checkout pinsdaemon
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: Touch-N-Stars/pinsdaemon
           path: pinsdaemon
@@ -437,7 +437,7 @@ jobs:
           mv "$FILENAME" ../artifacts/
 
       - name: Checkout WandererETASDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: nitr57/WandererETASDK
           path: WandererETASDK
@@ -1470,7 +1470,7 @@ jobs:
           echo "path=$bundle_path" >> "$GITHUB_OUTPUT"
 
       - name: Publish deb-only GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         if: success()
         with:
           tag_name: ${{ steps.release_tag.outputs.value }}
@@ -1487,7 +1487,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload plugin deb artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugin-debs
           path: ${{ env.PLUGIN_ARTIFACT_DIR }}
