@@ -146,19 +146,22 @@ jobs:
           fi
 
           # Rebuild NOVAS and sync generated files into the existing external layout.
-          # The checkout intentionally skips Git LFS, so CIO_RA.TXT may be only a
-          # small LFS pointer. Fetch the real data file before running cio_file;
-          # otherwise the generator can loop for several minutes and fail.
-          cio_txt="NOVAS31/NOVAS31/CIO_RA.TXT"
-          if grep -q 'git-lfs.github.com/spec' "$cio_txt"; then
-            echo "$cio_txt is a Git LFS pointer; fetching the real file"
-            git lfs pull --include="$cio_txt" --exclude="" || true
-          fi
-          if grep -q 'git-lfs.github.com/spec' "$cio_txt"; then
-            echo "Failed to fetch the real $cio_txt from Git LFS" >&2
-            echo "Cannot generate NOVAS cio_ra.bin from an LFS pointer file" >&2
+          # The checkout intentionally skips Git LFS. Always replace CIO_RA.TXT with
+          # the upstream non-LFS copy before generating cio_ra.bin.
+          cio_path="NOVAS31/NOVAS31/CIO_RA.TXT"
+          tmp_cio="$(mktemp)"
+          curl -L --fail --retry 3 --retry-delay 5 \
+            -o "$tmp_cio" \
+            "https://raw.githubusercontent.com/jacobwilliams/NOVAS/master/CIO_RA.TXT"
+          if grep -q 'git-lfs.github.com/spec' "$tmp_cio"; then
+            echo "Downloaded CIO_RA.TXT is still an LFS pointer" >&2
             exit 1
           fi
+          if [ "$(wc -c < "$tmp_cio")" -lt 1000000 ]; then
+            echo "Downloaded CIO_RA.TXT is unexpectedly small" >&2
+            exit 1
+          fi
+          mv "$tmp_cio" "$cio_path"
 
           pushd NOVAS31 >/dev/null
           make clean || true
