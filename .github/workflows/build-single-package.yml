@@ -579,22 +579,25 @@ jobs:
               return 1
             fi
 
-            local assembly_version_line
+            local assembly_version_line=""
             if [ -n "$assembly_regex" ]; then
-              assembly_version_line=$(grep -E "$assembly_regex" "$assembly_info" || true)
+              assembly_version_line=$(grep -E "$assembly_regex" "$assembly_info" | grep -E '^[[:space:]]*\[assembly:' | grep -E '"[0-9]+(\.[0-9]+){1,3}([-.+][A-Za-z0-9.-]+)?"' | head -n 1 || true)
             else
-              assembly_version_line=$(grep -E '^\s*\[assembly:\s*AssemblyVersion' "$assembly_info" || true)
+              assembly_version_line=$(grep -E '^[[:space:]]*\[assembly:[[:space:]]*AssemblyVersion' "$assembly_info" | grep -E '"[0-9]+(\.[0-9]+){1,3}([-.+][A-Za-z0-9.-]+)?"' | head -n 1 || true)
             fi
 
-            if [ -z "$assembly_version_line" ]; then
-              assembly_version_line=$(grep -E 'AssemblyVersion' "$assembly_info" || true)
+            local plugin_version=""
+            if [ -n "$assembly_version_line" ]; then
+              plugin_version=$(echo "$assembly_version_line" | sed -E 's/.*"([^"]+)".*/\1/')
             fi
 
-            local plugin_version
-            plugin_version=$(echo "$assembly_version_line" | sed -E 's/.*"([^"]+)".*/\1/')
             if [ -z "$plugin_version" ]; then
-              echo "AssemblyVersion not found in $assembly_info" >&2
-              return 1
+              plugin_version=$(grep -E '<(Version|AssemblyVersion|FileVersion)>[0-9]+(\.[0-9]+){1,3}([-.+][A-Za-z0-9.-]+)?</(Version|AssemblyVersion|FileVersion)>' "$project_path" | head -n 1 | sed -E 's/.*>([^<]+)<.*/\1/' || true)
+            fi
+
+            if ! echo "$plugin_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}([-.+][A-Za-z0-9.-]+)?$'; then
+              echo "Could not determine a valid package version for ${deb_package}; falling back to 0.0.0" >&2
+              plugin_version="0.0.0"
             fi
 
             plugin_version="${plugin_version}+${CI_BUILD_NUMBER}"
